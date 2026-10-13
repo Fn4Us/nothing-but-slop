@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pattern QR generator</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--mu:#666;--bd:#bbb;box-sizing:border-box;padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#17181a;--fg:#eee;--mu:#999;--bd:#555;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#17181a;--fg:#eee;--mu:#999;--bd:#555;color-scheme:dark}
+body{margin:0 auto;padding:16px;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif;max-width:600px}
+h1{font-size:20px;margin:0 0 4px}p{color:var(--mu);margin:4px 0 12px}
+label{display:block;margin:8px 0 2px;font-size:13px;color:var(--mu)}
+input,select,button{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:6px 8px;max-width:100%}
+input#t{width:100%;box-sizing:border-box}.r{display:flex;gap:10px;flex-wrap:wrap}.r input{width:80px}
+#grid{display:grid;grid-template-columns:repeat(15,22px);gap:1px;width:max-content;border:1px solid var(--bd);touch-action:none;user-select:none}
+#grid div{width:22px;height:22px;background:#fff}#grid div.on{background:#000}
+button{cursor:pointer;margin:10px 8px 0 0}#st{margin:10px 0;min-height:2.8em}
+canvas{max-width:100%;image-rendering:pixelated;border:1px solid var(--bd)}
+</style></head><body>
+<h1>Pattern QR generator</h1>
+<p>Embeds a 15×15 bitmap (plus 1-module border) by solving for the padding bits, so error correction is only used where it can't.</p>
+<label>Content (text or URL)</label><input id="t" value="https://example.com">
+<div class="r">
+<div><label>EC level</label><select id="l"><option value="0">L</option><option value="1">M</option><option value="2">Q</option><option value="3" selected>H</option></select></div>
+<div><label>Max ECC budget %</label><input id="b" type="number" value="80" min="0" max="100"></div>
+<div><label>Max version (≤20)</label><input id="v" type="number" value="16" min="1" max="20"></div>
+<div><label>Border</label><select id="c"><option value="1">Black</option><option value="0">White</option></select></div>
+</div>
+<label>Pattern (click / drag; black = dark module)</label><div id="grid"></div>
+<button id="go">Generate</button><button id="clr">Clear</button>
+<div id="st"></div><canvas id="cv" width="1" height="1"></canvas>
+<script>
+const $=i=>document.getElementById(i);
+const E=[],L=[];{let x=1;for(let i=0;i<255;i++){E[i]=x;L[x]=i;x<<=1;if(x>255)x^=0x11D}}
+const mul=(a,b)=>a&&b?E[(L[a]+L[b])%255]:0;
+const rsDiv=d=>{const r=Array(d-1).fill(0);r.push(1);let t=1;for(let i=0;i<d;i++){for(let j=0;j<d;j++){r[j]=mul(r[j],t);if(j+1<d)r[j]^=r[j+1]}t=mul(t,2)}return r};
+const rsRem=(data,g)=>{const r=g.map(()=>0);for(const b of data){const f=b^r.shift();r.push(0);g.forEach((c,i)=>r[i]^=mul(c,f))}return r};
+const EC=[[7,10,15,20,26,18,20,24,30,18,20,24,26,30,22,24,28,30,28,28],[10,16,26,18,24,16,18,22,22,26,30,22,22,24,24,28,28,26,26,26],[13,22,18,26,18,24,18,22,20,24,28,26,24,20,30,24,28,28,26,30],[17,28,22,16,22,28,26,26,24,28,24,28,22,24,24,30,28,28,26,28]];
+const NB=[[1,1,1,1,1,2,2,2,2,4,4,4,4,4,6,6,6,6,7,8],[1,1,1,2,2,4,4,4,5,5,5,8,9,9,10,10,11,13,14,16],[1,1,2,2,4,4,6,6,8,8,8,10,12,16,12,17,16,18,21,20],[1,1,2,4,4,4,5,6,8,8,11,11,16,16,18,16,19,21,25,25]];
+const mk=[(x,y)=>(x+y)%2==0,(x,y)=>y%2==0,(x,y)=>x%3==0,(x,y)=>(x+y)%3==0,(x,y)=>((x/3|0)+(y>>1))%2==0,(x,y)=>x*y%2+x*y%3==0,(x,y)=>(x*y%2+x*y%3)%2==0,(x,y)=>((x+y)%2+x*y%3)%2==0].map(f=>(x,y)=>f(x,y)?1:0);
+const LC={};
+function lay(v){if(LC[v])return LC[v];const n=17+4*v,fn=Array.from({length:n},()=>Array(n).fill(0)),dk=Array.from({length:n},()=>Array(n).fill(0));
+const set=(x,y,b)=>{if(x>=0&&y>=0&&x<n&&y<n){fn[y][x]=1;dk[y][x]=b?1:0}};
+for(let i=0;i<n;i++){set(6,i,i%2==0);set(i,6,i%2==0)}
+for(const[cx,cy]of[[3,3],[n-4,3],[3,n-4]])for(let dy=-4;dy<=4;dy++)for(let dx=-4;dx<=4;dx++){const d=Math.max(Math.abs(dx),Math.abs(dy));set(cx+dx,cy+dy,d!=2&&d!=4)}
+const na=v>1?(v/7|0)+2:0,st=v>1?Math.ceil((v*4+4)/(na*2-2))*2:0,ap=[6];
+for(let p=v*4+10;ap.length<na;p-=st)ap.splice(1,0,p);
+for(let i=0;i<na;i++)for(let j=0;j<na;j++){if(i==0&&j==0||i==0&&j==na-1||i==na-1&&j==0)continue;for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++)set(ap[i]+dx,ap[j]+dy,Math.max(Math.abs(dx),Math.abs(dy))!=1)}
+const rs=(x,y)=>{if(!fn[y][x])set(x,y,0)};
+for(let i=0;i<9;i++){rs(8,i);rs(i,8)}for(let i=0;i<8;i++){rs(n-1-i,8);rs(8,n-1-i)}set(8,n-8,1);
+if(v>=7)for(let i=0;i<18;i++){set(n-11+i%3,i/3|0,0);set(i/3|0,n-11+i%3,0)}
+return LC[v]={n,fn,dk}}
+function solve(rows,rhs,W){const B=[],bad=[];
+rows.forEach((r0,t)=>{const r=r0.slice();let c=rhs[t];
+for(let w=0;w<W;w++)while(r[w]){const p=w*32+31-Math.clz32(r[w]&-r[w]),e=B[p];if(!e){B[p]={r,c};return}for(let q=w;q<W;q++)r[q]^=e.r[q];c^=e.c}
+if(c)bad.push(t)});
+const xs=new Uint32Array(W),ps=[];B.forEach((e,p)=>ps.push(p));
+for(const p of ps.reverse()){const e=B[p];let a=0;for(let w=0;w<W;w++)a^=e.r[w]&xs[w];a^=a>>>16;a^=a>>>8;a^=a>>>4;a^=a>>>2;a^=a>>>1;if((a&1)^e.c)xs[p>>5]|=1<<(p&31)}
+return{xs,bad}}
+function prep(v,l,txt){const{n,fn,dk}=lay(v);let raw=(16*v+128)*v+64;
+if(v>1){const a=(v/7|0)+2;raw-=(25*a-10)*a-55;if(v>6)raw-=36}
+const tot=raw>>3,ecc=EC[l][v-1],nb=NB[l][v-1],K=tot-ecc*nb,sh=nb-tot%nb,sl=(tot/nb|0)-ecc,hb=v<10?8:16,nbits=8+hb+txt.length*8;
+if(nbits>K*8||txt.length>=2**hb)return null;
+const F=Math.ceil(nbits/8),nf=(K-F)*8,W=Math.max(1,Math.ceil(nf/32)),data=new Uint8Array(K);let bp=0;
+const put=(val,len)=>{for(let i=len-1;i>=0;i--,bp++)data[bp>>3]|=((val>>i)&1)<<(7-(bp&7))};
+put(4,4);put(txt.length,hb);txt.forEach(b=>put(b,8));
+const bs=[],dB=[];for(let b=0,s=0;b<nb;b++){const len=sl+(b<sh?0:1);bs.push({s,len});for(let i=0;i<len;i++)dB[s+i]=b;s+=len}
+const cwB=[],cwI=[],cwE=[];
+for(let i=0;i<=sl;i++)for(let b=0;b<nb;b++)if(i<bs[b].len){cwB.push(b);cwI.push(i);cwE.push(0)}
+for(let e=0;e<ecc;e++)for(let b=0;b<nb;b++){cwB.push(b);cwI.push(e);cwE.push(1)}
+const gen=rsDiv(ecc),u={};
+for(let d=F;d<K;d++){const o=bs[dB[d]],a=Array(o.len).fill(0);a[d-o.s]=1;u[d]=rsRem(a,gen)}
+const pos=[],idx=Array.from({length:n},()=>Array(n).fill(-1));
+for(let r=n-1;r>=1;r-=2){if(r==6)r=5;for(let t=0;t<n;t++)for(let j=0;j<2;j++){const x=r-j,y=((r+1)&2)?t:n-1-t;if(!fn[y][x]){if(pos.length<tot*8)idx[y][x]=pos.length;pos.push([x,y])}}}
+const enc=d=>{const ec=bs.map(o=>rsRem(d.subarray(o.s,o.s+o.len),gen));return cwB.map((b,c)=>cwE[c]?ec[b][cwI[c]]:d[bs[b].s+cwI[c]])};
+const bit=(st,s)=>(st[s>>3]>>(7-(s&7)))&1,base=enc(data);
+const rowOf=s=>{const c=s>>3,p=s&7,b=cwB[c],r=new Uint32Array(W);
+if(!cwE[c]){const d=bs[b].s+cwI[c];if(d>=F){const k=(d-F)*8+p;r[k>>5]|=1<<(k&31)}}
+else for(let j=0;j<bs[b].len;j++){const d=bs[b].s+j;if(d<F)continue;const uu=u[d][cwI[c]];if(!uu)continue;for(let k=0;k<8;k++)if((mul(1<<k,uu)>>(7-p))&1){const q=(d-F)*8+7-k;r[q>>5]|=1<<(q&31)}}
+return r};
+const search=(px,py,T,best)=>{const it=[];
+for(let y=0;y<17;y++)for(let x=0;x<17;x++){const s=idx[py+y][px+x];if(s>=0)it.push({x:px+x,y:py+y,s,t:T[y][x],e:cwE[s>>3]})}
+it.sort((a,b)=>a.e-b.e);const rows=it.map(o=>rowOf(o.s));
+for(let m=0;m<8;m++){const r=solve(rows,it.map(o=>o.t^mk[m](o.x,o.y)^bit(base,o.s)),W);
+if(!best||r.bad.length<best.nbad)best={nbad:r.bad.length,m,px,py,xs:r.xs};if(!r.bad.length)break}
+return best};
+const finish=(B,T)=>{const d=data.slice();for(let q=0;q<nf;q++)if((B.xs[q>>5]>>>(q&31))&1)d[F+(q>>3)]|=0x80>>(q&7);
+const st=enc(d),M=dk.map(r=>r.slice());
+pos.forEach(([x,y],i)=>M[y][x]=(i<tot*8?bit(st,i):0)^mk[B.m](x,y));
+const d0=[1,0,3,2][l]<<3|B.m;let r=d0;for(let i=0;i<10;i++)r=(r<<1)^((r>>9)*0x537);
+const bits=((d0<<10)|r)^0x5412,g=i=>(bits>>i)&1;
+for(let i=0;i<=5;i++)M[i][8]=g(i);M[7][8]=g(6);M[8][8]=g(7);M[8][7]=g(8);for(let i=9;i<15;i++)M[8][14-i]=g(i);
+for(let i=0;i<8;i++)M[8][n-1-i]=g(i);for(let i=8;i<15;i++)M[n-15+i][8]=g(i);M[n-8][8]=1;
+if(v>=7){let q=v;for(let i=0;i<12;i++)q=(q<<1)^((q>>11)*0x1F25);const vb=v<<12|q;for(let i=0;i<18;i++){const b=(vb>>i)&1,a=n-11+i%3,c=i/3|0;M[c][a]=b;M[a][c]=b}}
+const dm=bs.map(()=>new Set());let ow=0;
+for(let y=0;y<17;y++)for(let x=0;x<17;x++){const X=B.px+x,Y=B.py+y;if(M[Y][X]!=T[y][x]){M[Y][X]=T[y][x];ow++;const s=idx[Y][X];if(s>=0)dm[cwB[s>>3]].add(s>>3)}}
+return{M,n,v,l,m:B.m,ow,used:Math.max(...dm.map(s=>s.size))/(ecc>>1)}};
+return{search,finish}}
+const SM=["....#######....","..##.......##..",".#...........#.",".#..##...##..#.","#...##...##...#","#.............#","#.............#","#..#.......#..#","#...#.....#...#","#....#####....#",".#...........#.",".#...........#.","..##.......##..","....#######....","..............."];
+const G=$('grid');let paint=0;
+SM.forEach((r,y)=>[...r].forEach((c,x)=>{const d=document.createElement('div');d.dataset.i=y*15+x;if(c=='#')d.className='on';G.append(d)}));
+G.onpointerdown=e=>{const d=e.target;if(d.dataset.i==null)return;paint=!d.classList.contains('on');d.classList.toggle('on',paint)};
+G.onpointermove=e=>{if(e.buttons&1){const d=document.elementFromPoint(e.clientX,e.clientY);if(d&&d.dataset.i!=null)d.classList.toggle('on',paint)}};
+$('clr').onclick=()=>[...G.children].forEach(d=>d.className='');
+function draw(R){const c=$('cv'),k=Math.max(4,Math.floor(560/(R.n+8)));c.width=c.height=(R.n+8)*k;const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.fillStyle='#000';R.M.forEach((r,y)=>r.forEach((b,i)=>b&&x.fillRect((i+4)*k,(y+4)*k,k,k)))}
+const tick=()=>new Promise(r=>setTimeout(r));
+$('go').onclick=async()=>{const txt=new TextEncoder().encode($('t').value),l=+$('l').value,bud=+$('b').value,maxv=Math.min(20,+$('v').value||20),bc=+$('c').value,st=$('st');
+if(!txt.length){st.textContent='Enter some content.';return}
+const g=[...G.children].map(d=>+d.classList.contains('on')),T=[];
+for(let y=0;y<17;y++){T.push([]);for(let x=0;x<17;x++)T[y][x]=(x%16&&y%16)?g[(y-1)*15+x-1]:bc}
+let fb=null;
+for(let v=1;v<=maxv;v++){const{n,fn}=lay(v),P=[];
+for(let py=0;py<=n-17;py++)for(let px=0;px<=n-17;px++){let ok=1;for(let y=py;ok&&y<py+17;y++)for(let x=px;x<px+17;x++)if(fn[y][x]){ok=0;break}if(ok)P.push([px,py])}
+if(!P.length)continue;const S=prep(v,l,txt);if(!S)continue;
+const step=Math.ceil(P.length/24);let best=null;
+for(let k=0;k<P.length&&!(best&&!best.nbad);k+=step){st.textContent=`Searching version ${v}… (${Math.ceil(k/step)+1}/${Math.ceil(P.length/step)} positions)`;await tick();best=S.search(P[k][0],P[k][1],T,best)}
+if(!best)continue;const R=S.finish(best,T);
+if(!fb||R.used<fb.used)fb=R;
+if(R.used*100<=bud+1e-9){fb=R;break}}
+if(!fb){st.textContent='No version up to the max fits this content and pattern. Raise max version or shorten the content.';return}
+draw(fb);const ok=fb.used*100<=bud+1e-9;
+st.textContent=`${ok?'Done':'Best found, but over budget'}: version ${fb.v}, level ${'LMQH'[fb.l]}, mask ${fb.m}. Overwrote ${fb.ow} of 289 patch modules; worst Reed–Solomon block uses ${Math.round(fb.used*100)}% of its correctable codewords (budget ${bud}%).`};
+</script></body></html>
